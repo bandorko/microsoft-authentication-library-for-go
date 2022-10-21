@@ -150,6 +150,13 @@ func WithCacheAccessor(ca cache.ExportReplace) Option {
 	}
 }
 
+// WithInstanceDiscovery allows disabling instance discovery (it's enabled by default)
+func WithInstanceDiscovery(enabled bool) Option {
+	return func(c *Client) {
+		c.AuthParams.AuthorityInfo.DisableInstanceDiscovery = !enabled
+	}
+}
+
 // WithKnownAuthorityHosts specifies hosts Client shouldn't validate or request metadata for because they're known to the user
 func WithKnownAuthorityHosts(hosts []string) Option {
 	return func(c *Client) {

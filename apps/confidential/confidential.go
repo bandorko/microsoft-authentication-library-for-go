@@ -284,6 +284,8 @@ type Options struct {
 
 	// Instructs MSAL Go to use an Azure regional token service with sepcified AzureRegion.
 	AzureRegion string
+
+	disableInstanceDiscovery bool
 }
 
 func (o Options) validate() error {
@@ -319,6 +321,15 @@ func WithAccessor(accessor cache.ExportReplace) Option {
 func WithHTTPClient(httpClient ops.HTTPClient) Option {
 	return func(o *Options) {
 		o.HTTPClient = httpClient
+	}
+}
+
+// WithInstanceDiscovery allows disabling instance discovery (it's enabled by default). When this option is false,
+// the client won't request Azure AD instance metadata from login.microsoftonline.com. This is necessary in private
+// cloud and ADFS scenarios in which login.microsoftonline.com is unreachable or unable to provide the metadata.
+func WithInstanceDiscovery(enabled bool) Option {
+	return func(o *Options) {
+		o.disableInstanceDiscovery = !enabled
 	}
 }
 
@@ -369,6 +380,7 @@ func New(clientID string, cred Credential, options ...Option) (Client, error) {
 
 	baseOpts := []base.Option{
 		base.WithCacheAccessor(opts.Accessor),
+		base.WithInstanceDiscovery(!opts.disableInstanceDiscovery),
 		base.WithRegionDetection(opts.AzureRegion),
 		base.WithX5C(opts.SendX5C),
 	}

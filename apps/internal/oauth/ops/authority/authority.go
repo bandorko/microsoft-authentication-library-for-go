@@ -21,14 +21,14 @@ import (
 )
 
 const (
-	authorizationEndpoint             = "https://%v/%v/oauth2/v2.0/authorize"
-	instanceDiscoveryEndpoint         = "https://%v/common/discovery/instance"
-	tenantDiscoveryEndpointWithRegion = "https://%s.%s/%s/v2.0/.well-known/openid-configuration"
-	regionName                        = "REGION_NAME"
-	defaultAPIVersion                 = "2021-10-01"
-	imdsEndpoint                      = "http://169.254.169.254/metadata/instance/compute/location?format=text&api-version=" + defaultAPIVersion
-	defaultHost                       = "login.microsoftonline.com"
-	autoDetectRegion                  = "TryAutoDetect"
+	authorizationEndpoint     = "https://%v/%v/oauth2/v2.0/authorize"
+	instanceDiscoveryEndpoint = "https://%v/common/discovery/instance"
+	tenantDiscoveryEndpoint   = "https://%s/%s/v2.0/.well-known/openid-configuration"
+	regionName                = "REGION_NAME"
+	defaultAPIVersion         = "2021-10-01"
+	imdsEndpoint              = "http://169.254.169.254/metadata/instance/compute/location?format=text&api-version=" + defaultAPIVersion
+	defaultHost               = "login.microsoftonline.com"
+	autoDetectRegion          = "TryAutoDetect"
 )
 
 type jsonCaller interface {
@@ -198,6 +198,7 @@ func (p AuthParams) WithTenant(ID string) (AuthParams, error) {
 	authority := "https://" + path.Join(p.AuthorityInfo.Host, ID)
 	info, err := NewInfoFromAuthorityURI(authority, p.AuthorityInfo.ValidateAuthority)
 	if err == nil {
+		info.DisableInstanceDiscovery = p.AuthorityInfo.DisableInstanceDiscovery
 		p.AuthorityInfo = info
 	}
 	return p, err
@@ -205,13 +206,14 @@ func (p AuthParams) WithTenant(ID string) (AuthParams, error) {
 
 // Info consists of information about the authority.
 type Info struct {
-	Host                  string
-	CanonicalAuthorityURI string
-	AuthorityType         string
-	UserRealmURIPrefix    string
-	ValidateAuthority     bool
-	Tenant                string
-	Region                string
+	Host                     string
+	CanonicalAuthorityURI    string
+	AuthorityType            string
+	UserRealmURIPrefix       string
+	ValidateAuthority        bool
+	DisableInstanceDiscovery bool
+	Tenant                   string
+	Region                   string
 }
 
 func firstPathSegment(u *url.URL) (string, error) {
@@ -359,28 +361,40 @@ func (c Client) GetTenantDiscoveryResponse(ctx context.Context, openIDConfigurat
 }
 
 func (c Client) AADInstanceDiscovery(ctx context.Context, authorityInfo Info) (InstanceDiscoveryResponse, error) {
-	region := ""
 	var err error
 	resp := InstanceDiscoveryResponse{}
-	if authorityInfo.Region != "" && authorityInfo.Region != autoDetectRegion {
-		region = authorityInfo.Region
-	} else if authorityInfo.Region == autoDetectRegion {
+	region := authorityInfo.Region
+	if region == autoDetectRegion {
 		region = detectRegion(ctx)
 	}
-	if region != "" {
-		environment := authorityInfo.Host
-		switch environment {
-		case "login.microsoft.com", "login.windows.net", "sts.windows.net", defaultHost:
-			environment = "r." + defaultHost
+	if region != "" || authorityInfo.DisableInstanceDiscovery {
+		// assume the authority is conventional and we therefore know the metadata without asking the authority
+		host := authorityInfo.Host
+		aliases := []string{host}
+		preferredNetwork := host
+		if region != "" {
+			switch host {
+			case "login.microsoft.com", "login.windows.net", "sts.windows.net", defaultHost:
+				preferredNetwork = fmt.Sprintf("%s.%s", region, host)
+				host = fmt.Sprintf("%s.r.%s", region, defaultHost)
+			default:
+				// the regional endpoint is a subdomain of the authority
+				host = fmt.Sprintf("%s.%s", authorityInfo.Region, host)
+				preferredNetwork = host
+				// consider the regional endpoint an alias of the non-regional endpoint
+				aliases = append(aliases, host)
+			}
 		}
-		resp.TenantDiscoveryEndpoint = fmt.Sprintf(tenantDiscoveryEndpointWithRegion, region, environment, authorityInfo.Tenant)
-		metadata := InstanceDiscoveryMetadata{
-			PreferredNetwork: fmt.Sprintf("%v.%v", region, authorityInfo.Host),
-			PreferredCache:   authorityInfo.Host,
-			Aliases:          []string{fmt.Sprintf("%v.%v", region, authorityInfo.Host), authorityInfo.Host},
+		resp.TenantDiscoveryEndpoint = fmt.Sprintf(tenantDiscoveryEndpoint, host, authorityInfo.Tenant)
+		resp.Metadata = []InstanceDiscoveryMetadata{
+			{
+				PreferredNetwork: preferredNetwork,
+				PreferredCache:   authorityInfo.Host,
+				Aliases:          aliases,
+			},
 		}
-		resp.Metadata = []InstanceDiscoveryMetadata{metadata}
 	} else {
+		// request instance metadata from the authority
 		qv := url.Values{}
 		qv.Set("api-version", "1.1")
 		qv.Set("authorization_endpoint", fmt.Sprintf(authorizationEndpoint, authorityInfo.Host, authorityInfo.Tenant))

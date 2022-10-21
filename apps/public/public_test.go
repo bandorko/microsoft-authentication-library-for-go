@@ -12,10 +12,22 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
+	internalTime "github.com/AzureAD/microsoft-authentication-library-for-go/apps/internal/json/types/time"
 	"github.com/AzureAD/microsoft-authentication-library-for-go/apps/internal/mock"
 	"github.com/AzureAD/microsoft-authentication-library-for-go/apps/internal/oauth/fake"
+	"github.com/AzureAD/microsoft-authentication-library-for-go/apps/internal/oauth/ops/accesstokens"
+	"github.com/AzureAD/microsoft-authentication-library-for-go/apps/internal/oauth/ops/authority"
 )
+
+// errorClient is an HTTP client for tests that should fail when Client sends a request
+type errorClient struct{}
+
+func (*errorClient) Do(req *http.Request) (*http.Response, error) {
+	return nil, fmt.Errorf("expected no requests but received one for %s", req.URL.String())
+}
+func (*errorClient) CloseIdleConnections() {}
 
 var tokenScope = []string{"the_scope"}
 
@@ -226,6 +238,88 @@ func TestAcquireTokenWithTenantID(t *testing.T) {
 				// ...but fail for another tenant
 				if _, err = client.AcquireTokenSilent(ctx, tokenScope, WithSilentAccount(ar.Account), WithTenantID("not-"+test.tenant)); err == nil {
 					t.Fatal("expected an error")
+				}
+			})
+		}
+	}
+}
+
+func TestWithInstanceDiscovery(t *testing.T) {
+	// replacing browserOpenURL with a fake for the duration of this test enables testing AcquireTokenInteractive
+	realBrowserOpenURL := browserOpenURL
+	defer func() { browserOpenURL = realBrowserOpenURL }()
+	browserOpenURL = fakeBrowserOpenURL
+
+	token := "fake token"
+	for _, test := range []struct{ host, tenant string }{
+		{"login.microsoftonline.com", "common"},
+		{"login.microsoftonline.com", "tenant"},
+		{"contoso.com", "adfs"},
+		{"cloud.local", "tenant"},
+	} {
+		baseURL := "https://" + test.host
+		for _, method := range []string{"authcode", "devicecode", "interactive", "password"} {
+			t.Run(method, func(t *testing.T) {
+				client, err := New("client-id", WithAuthority(baseURL+"/"+test.tenant), WithHTTPClient(&errorClient{}), WithInstanceDiscovery(false))
+				if err != nil {
+					t.Fatal(err)
+				}
+				client.base.Token.AccessTokens = &fake.AccessTokens{
+					AccessToken: accesstokens.TokenResponse{
+						AccessToken:   token,
+						ExpiresOn:     internalTime.DurationTime{T: time.Now().Add(time.Hour)},
+						GrantedScopes: accesstokens.Scopes{Slice: tokenScope},
+					},
+					DeviceCode: accesstokens.DeviceCodeResult{
+						DeviceCode: "DeviceCode",
+						ExpiresOn:  time.Now().Add(time.Hour),
+						Interval:   600,
+						Scopes:     tokenScope,
+						UserCode:   "UserCode",
+					},
+					Result: []error{nil},
+				}
+				// Resolver provides tenant metadata, which the client should always request, and is separate from instance metadata
+				client.base.Token.Resolver = &fake.ResolveEndpoints{
+					Endpoints: authority.NewEndpoints(baseURL+"/auth", baseURL+"/token", baseURL+"/jwt", test.host),
+				}
+				ctx := context.Background()
+				if _, err = client.AcquireTokenSilent(ctx, tokenScope); err == nil {
+					t.Fatal("silent auth should fail because the cache is empty")
+				}
+				var ar AuthResult
+				var dc DeviceCode
+				switch method {
+				case "authcode":
+					ar, err = client.AcquireTokenByAuthCode(ctx, "auth code", "https://localhost", tokenScope)
+				case "devicecode":
+					dc, err = client.AcquireTokenByDeviceCode(ctx, tokenScope)
+					if err != nil {
+						t.Fatal(err)
+					}
+					ar, err = dc.AuthenticationResult(ctx)
+				case "interactive":
+					ar, err = client.AcquireTokenInteractive(ctx, tokenScope)
+				case "password":
+					client.base.Token.Authority = fake.Authority{
+						Realm: authority.UserRealm{AccountType: authority.Managed},
+					}
+					ar, err = client.AcquireTokenByUsernamePassword(ctx, tokenScope, "username", "password")
+				default:
+					t.Fatalf("test bug: no test for " + method)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if ar.AccessToken != token {
+					t.Fatalf(`unexpected access token "%s"`, ar.AccessToken)
+				}
+				// silent authentication should now succeed
+				if ar, err = client.AcquireTokenSilent(ctx, tokenScope); err != nil {
+					t.Fatal(err)
+				}
+				if ar.AccessToken != token {
+					t.Fatal("cached access token should match the one returned by AcquireToken*")
 				}
 			})
 		}

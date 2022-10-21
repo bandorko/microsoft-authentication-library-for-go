@@ -528,6 +528,71 @@ func TestNewCredFromTokenProviderError(t *testing.T) {
 	}
 }
 
+func TestWithInstanceDiscovery(t *testing.T) {
+	for _, test := range []struct{ host, tenant string }{
+		{"login.microsoftonline.com", "tenant"},
+		{"contoso.com", "adfs"},
+		{"cloud.local", "tenant"},
+	} {
+		baseURL := "https://" + test.host
+		for _, method := range []string{"authcode", "credential", "obo"} {
+			t.Run(method, func(t *testing.T) {
+				cred, err := NewCredFromSecret("secret")
+				if err != nil {
+					t.Fatal(err)
+				}
+				client, err := New("client-id", cred, WithAuthority(baseURL+"/"+test.tenant), WithHTTPClient(&errorClient{}), WithInstanceDiscovery(false))
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Resolver provides tenant metadata, which the client should always request, and is separate from instance metadata
+				client.base.Token.Resolver = &fake.ResolveEndpoints{
+					Endpoints: authority.NewEndpoints(baseURL+"/auth", baseURL+"/token", baseURL+"/jwt", test.host),
+				}
+				client.base.Token.AccessTokens = &fake.AccessTokens{
+					AccessToken: accesstokens.TokenResponse{
+						AccessToken:   token,
+						ExpiresOn:     internalTime.DurationTime{T: time.Now().Add(time.Hour)},
+						GrantedScopes: accesstokens.Scopes{Slice: tokenScope},
+					},
+				}
+				ctx := context.Background()
+				if _, err = client.AcquireTokenSilent(ctx, tokenScope); err == nil {
+					t.Fatal("silent auth should fail because the cache is empty")
+				}
+				var ar AuthResult
+				switch method {
+				case "authcode":
+					ar, err = client.AcquireTokenByAuthCode(ctx, "auth code", "https://localhost", tokenScope)
+				case "credential":
+					ar, err = client.AcquireTokenByCredential(ctx, tokenScope)
+				case "obo":
+					ar, err = client.AcquireTokenOnBehalfOf(ctx, "assertion", tokenScope)
+				default:
+					t.Fatalf("test bug: no test for " + method)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if ar.AccessToken != token {
+					t.Fatalf(`unexpected access token "%s"`, ar.AccessToken)
+				}
+				// silent authentication should now succeed
+				if method == "obo" {
+					if ar, err = client.AcquireTokenOnBehalfOf(ctx, "assertion", tokenScope); err != nil {
+						t.Fatal(err)
+					}
+				} else if ar, err = client.AcquireTokenSilent(ctx, tokenScope); err != nil {
+					t.Fatal(err)
+				}
+				if ar.AccessToken != token {
+					t.Fatal("cached access token should match the one returned by AcquireToken*")
+				}
+			})
+		}
+	}
+}
+
 func TestWithTenantID(t *testing.T) {
 	accessToken := "*"
 	uuid1 := "00000000-0000-0000-0000-000000000000"

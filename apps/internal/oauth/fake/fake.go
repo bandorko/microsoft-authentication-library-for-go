@@ -146,7 +146,7 @@ func (f Authority) UserRealm(ctx context.Context, params authority.AuthParams) (
 
 func (f Authority) AADInstanceDiscovery(ctx context.Context, info authority.Info) (authority.InstanceDiscoveryResponse, error) {
 	if f.Err {
-		return authority.InstanceDiscoveryResponse{}, errors.New("error")
+		return authority.InstanceDiscoveryResponse{}, errors.New("fake Authority.AADInstanceDiscovery error")
 	}
 	return f.InstanceResp, nil
 }

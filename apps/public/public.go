@@ -60,6 +60,8 @@ type Options struct {
 	// The HTTP client used for making requests.
 	// It defaults to a shared http.Client.
 	HTTPClient ops.HTTPClient
+
+	disableInstanceDiscovery bool
 }
 
 func (p *Options) validate() error {
@@ -97,6 +99,15 @@ func WithHTTPClient(httpClient ops.HTTPClient) Option {
 	}
 }
 
+// WithInstanceDiscovery allows disabling instance discovery (it's enabled by default). When this option is false,
+// the client won't request Azure AD instance metadata from login.microsoftonline.com. This is necessary in private
+// cloud and ADFS scenarios in which login.microsoftonline.com is unreachable or unable to provide the metadata.
+func WithInstanceDiscovery(enabled bool) Option {
+	return func(o *Options) {
+		o.disableInstanceDiscovery = !enabled
+	}
+}
+
 // Client is a representation of authentication client for public applications as defined in the
 // package doc. For more information, visit https://docs.microsoft.com/azure/active-directory/develop/msal-client-applications.
 type Client struct {
@@ -117,7 +128,7 @@ func New(clientID string, options ...Option) (Client, error) {
 		return Client{}, err
 	}
 
-	base, err := base.New(clientID, opts.Authority, oauth.New(opts.HTTPClient), base.WithCacheAccessor(opts.Accessor))
+	base, err := base.New(clientID, opts.Authority, oauth.New(opts.HTTPClient), base.WithCacheAccessor(opts.Accessor), base.WithInstanceDiscovery(!opts.disableInstanceDiscovery))
 	if err != nil {
 		return Client{}, err
 	}
