@@ -347,7 +347,7 @@ func NewInfoFromAuthorityURI(authorityURI string, validateAuthority bool, instan
 
 	var canonicalAuthorityURI string
 
-	if strings.HasPrefix(policy, "b2c_1_") {
+	if strings.HasPrefix(policy, "b2c_1") {
 		canonicalAuthorityURI = fmt.Sprintf("https://%v/%v/%v/", u.Host, tenant, policy)
 	} else {
 		canonicalAuthorityURI = fmt.Sprintf("https://%v/%v/", u.Host, tenant)
